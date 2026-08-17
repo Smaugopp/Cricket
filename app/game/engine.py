@@ -123,12 +123,12 @@ class CricketEngine:
         batter_controller = self._controller_uid(match, striker_before)
         bowler_controller = self._controller_uid(match, bowler_before)
 
-        if batter_controller == owner_id:
+        if striker_before.uid == owner_id or batter_controller == owner_id:
             runs, wicket = random.choice([4, 6]), False
             text = "👑 OWNER POWER! " + (
                 "🔥 FOUR!" if runs == 4 else "💥 SIX!"
             )
-        elif bowler_controller == owner_id:
+        elif bowler_before.uid == owner_id or bowler_controller == owner_id:
             runs, wicket = 0, True
             text = "👑 OWNER BOWLING POWER! 🎯 WICKET!"
         elif int(bat) == int(bowl):
