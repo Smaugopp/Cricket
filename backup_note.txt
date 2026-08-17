@@ -1,0 +1,3 @@
+MongoDB is external Atlas in this deployment.
+Use MongoDB Atlas automated backups / continuous backup according to your Atlas plan.
+The VPS does not hold the primary database.
