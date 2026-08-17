@@ -5,7 +5,7 @@ import time
 
 class Phase(str, Enum):
     LOBBY = "lobby"
-    BAT = "bat"       # waiting for batter
+    BAT = "bat"       # waiting for striker
     BOWL = "bowl"     # waiting for bowler
     FINISHED = "finished"
 
@@ -20,11 +20,11 @@ class Player:
 class Innings:
     batter: Player
     bowler: Player
+    # Team matches only. Classic 1v1 intentionally has no non-striker.
     non_striker: Player | None = None
 
     batting_team: list = field(default_factory=list)
     bowling_team: list = field(default_factory=list)
-
     next_batter_index: int = 0
     bowler_index: int = 0
     dismissed: list = field(default_factory=list)
@@ -39,7 +39,8 @@ class Innings:
     last_ball: int = 0
     history: list = field(default_factory=list)
 
-    def over(self, balls_per_over):
+    def over(self, balls_per_over: int) -> str:
+        balls_per_over = max(1, int(balls_per_over))
         return f"{self.balls // balls_per_over}.{self.balls % balls_per_over}"
 
 
@@ -56,10 +57,8 @@ class Match:
     first_score: int | None = None
     target: int | None = None
 
-    # One-v-one: "classic"; team mode: "team"
     mode: str = "classic"
 
-    # Team-mode snapshot. Each side is a list of Player objects.
     team_a: list = field(default_factory=list)
     team_b: list = field(default_factory=list)
     team_a_name: str | None = None
@@ -99,9 +98,10 @@ class Match:
     def controller_uid_for(self, player):
         if self.mode != "team":
             return player.uid
-        if player in self.team_a:
+        side = self.team_for_uid(player.uid)
+        if side == "a":
             return self.team_a_captain
-        if player in self.team_b:
+        if side == "b":
             return self.team_b_captain
         return None
 

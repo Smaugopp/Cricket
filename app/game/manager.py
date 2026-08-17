@@ -121,14 +121,34 @@ class MatchManager:
 
         i = doc.get("innings")
         if i:
+            batter = Player(i["batter"]["uid"], i["batter"]["name"])
+            bowler = Player(i["bowler"]["uid"], i["bowler"]["name"])
+            batting_team = _players_from(i.get("batting_team"))
+            bowling_team = _players_from(i.get("bowling_team"))
+            non_striker = (
+                Player(i["non_striker"]["uid"], i["non_striker"]["name"])
+                if i.get("non_striker") else None
+            )
+
+            # Backward compatibility: old classic matches could have a fake
+            # non-striker. A restored classic match is always true 1v1.
+            if doc.get("mode", "classic") == "classic":
+                batting_team = [batter]
+                bowling_team = [bowler]
+                non_striker = None
+                next_batter_index = 1
+                bowler_index = 0
+            else:
+                next_batter_index = i.get("next_batter_index", 2)
+
             match.innings = Innings(
-                batter=Player(i["batter"]["uid"], i["batter"]["name"]),
-                bowler=Player(i["bowler"]["uid"], i["bowler"]["name"]),
-                non_striker=Player(i["non_striker"]["uid"], i["non_striker"]["name"]) if i.get("non_striker") else None,
-                batting_team=_players_from(i.get("batting_team")),
-                bowling_team=_players_from(i.get("bowling_team")),
-                next_batter_index=i.get("next_batter_index", 0),
-                bowler_index=i.get("bowler_index", 0),
+                batter=batter,
+                bowler=bowler,
+                non_striker=non_striker,
+                batting_team=batting_team,
+                bowling_team=bowling_team,
+                next_batter_index=next_batter_index,
+                bowler_index=bowler_index if doc.get("mode", "classic") == "classic" else i.get("bowler_index", 0),
                 dismissed=i.get("dismissed", []),
                 last_over_bowler_uid=i.get("last_over_bowler_uid"),
                 runs=i.get("runs", 0),

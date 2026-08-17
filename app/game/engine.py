@@ -1,6 +1,8 @@
 import random
 from dataclasses import dataclass
+
 from app.game.models import Innings, Match, Phase
+
 
 BOWLING_TYPES = {
     1: ("Swing", "🌪️"),
@@ -22,26 +24,38 @@ class Result:
 
 
 class CricketEngine:
-    def _new_innings(self, batting, bowling):
-        if len(batting) >= 2:
-            striker, non_striker = batting[0], batting[1]
-            next_index = 2
-        else:
-            striker, non_striker = batting[0], None
-            next_index = 1
+    def _new_innings(self, batting, bowling, classic=False):
+        batting = list(batting or [])
+        bowling = list(bowling or [])
+        if not batting or not bowling:
+            raise ValueError("An innings needs at least one batter and one bowler.")
+
+        if classic:
+            # True 1v1: exactly one active batter and one bowler.
+            return Innings(
+                batter=batting[0],
+                bowler=bowling[0],
+                non_striker=None,
+                batting_team=batting[:1],
+                bowling_team=bowling[:1],
+                next_batter_index=1,
+            )
+
+        if len(batting) < 2:
+            raise ValueError("A team innings needs at least two batters.")
 
         return Innings(
-            batter=striker,
-            non_striker=non_striker,
+            batter=batting[0],
+            non_striker=batting[1],
             bowler=bowling[0],
-            batting_team=list(batting),
-            bowling_team=list(bowling),
-            next_batter_index=next_index,
+            batting_team=batting,
+            bowling_team=bowling,
+            next_batter_index=2,
             bowler_index=0,
         )
 
     def start(self, match):
-        """Start a classic 1-v-1 match: one batter, one bowler."""
+        """Start a classic 1v1 match: bowler chooses first."""
         assert match.opponent
         match.mode = "classic"
 
@@ -50,29 +64,21 @@ class CricketEngine:
         else:
             batter, bowler = match.opponent, match.creator
 
-        match.innings = Innings(
-            batter=batter,
-            bowler=bowler,
-            non_striker=None,
-            batting_team=[batter],
-            bowling_team=[bowler],
-            next_batter_index=1,
-            bowler_index=0,
-        )
+        match.innings = self._new_innings([batter], [bowler], classic=True)
         match.phase = Phase.BOWL
         match.pending_bat = None
         match.pending_bowl_type = None
         match.touch()
 
     def start_team(self, match, batting_side):
-        """Start a team match after both captains have joined."""
-        assert match.mode == "team"
-        if batting_side == "a":
-            batting, bowling = match.team_a, match.team_b
-        else:
-            batting, bowling = match.team_b, match.team_a
+        """Start a 4/5-player team innings."""
+        if match.mode != "team":
+            raise ValueError("start_team requires team mode.")
 
-        match.innings = self._new_innings(batting, bowling)
+        batting = match.team_a if batting_side == "a" else match.team_b
+        bowling = match.team_b if batting_side == "a" else match.team_a
+
+        match.innings = self._new_innings(batting, bowling, classic=False)
         match.phase = Phase.BOWL
         match.pending_bat = None
         match.pending_bowl_type = None
@@ -81,11 +87,13 @@ class CricketEngine:
     def _controller_uid(self, match, player):
         return match.controller_uid_for(player)
 
-    def _swap_strike(self, i):
-        if i.non_striker:
+    @staticmethod
+    def _swap_strike(i):
+        if i.non_striker is not None:
             i.batter, i.non_striker = i.non_striker, i.batter
 
-    def _next_batter(self, i):
+    @staticmethod
+    def _next_batter(i):
         while i.next_batter_index < len(i.batting_team):
             player = i.batting_team[i.next_batter_index]
             i.next_batter_index += 1
@@ -95,73 +103,72 @@ class CricketEngine:
 
     def _change_bowler(self, match):
         i = match.innings
-        if not i or not i.bowling_team:
+        if not i or len(i.bowling_team) <= 1:
             return
 
-        old = i.bowler
-        i.last_over_bowler_uid = old.uid
+        old_uid = i.bowler.uid
+        i.last_over_bowler_uid = old_uid
         total = len(i.bowling_team)
 
-        # Prefer a different bowler; with one-player bowling sides,
-        # retaining the same bowler is the only possible option.
+        # Prefer a different player from the previous bowler.
         for step in range(1, total + 1):
             idx = (i.bowler_index + step) % total
             candidate = i.bowling_team[idx]
-            if total == 1 or candidate.uid != old.uid:
+            if candidate.uid != old_uid:
                 i.bowler_index = idx
                 i.bowler = candidate
                 return
 
     def play(self, match, bat, bowl, owner_id):
         i = match.innings
-        assert i
+        if not i:
+            raise ValueError("No active innings.")
 
-        ball_type, ball_emoji = BOWLING_TYPES.get(
-            int(bowl), ("Unknown", "🏏")
-        )
+        bat = int(bat)
+        bowl = int(bowl)
+        if bat not in range(1, 7) or bowl not in BOWLING_TYPES:
+            raise ValueError("Batting and bowling choices must be 1–6.")
 
-        # The current batter and bowler are captured before state changes.
+        ball_type, ball_emoji = BOWLING_TYPES[bowl]
         striker_before = i.batter
         bowler_before = i.bowler
+
         i.balls += 1
 
-        # Owner powers work for the actual player in classic mode and for
-        # the captain controlling that side in team mode.
         batter_controller = self._controller_uid(match, striker_before)
         bowler_controller = self._controller_uid(match, bowler_before)
 
         if batter_controller == owner_id:
             runs, wicket = random.choice([4, 6]), False
-            text = "👑 OWNER POWER! " + (
+            text = "👑 OWNER POWER  •  " + (
                 "🔥 FOUR!" if runs == 4 else "💥 SIX!"
             )
         elif bowler_controller == owner_id:
             runs, wicket = 0, True
-            text = "👑 OWNER BOWLING POWER! 🎯 WICKET!"
-        elif int(bat) == int(bowl):
+            text = "👑 OWNER BOWLING POWER  •  🎯 WICKET!"
+        elif bat == bowl:
             runs, wicket = 0, True
-            text = f"🎯 WICKET! {ball_emoji} {ball_type} beats the shot."
+            text = f"🎯 WICKET!  {ball_emoji} {ball_type} beats the shot."
         else:
-            runs, wicket = int(bat), False
+            runs, wicket = bat, False
             if runs == 6:
-                text = f"💥 SIX! {ball_emoji} {ball_type}"
+                text = f"💥 SIX!  {ball_emoji} {ball_type}"
             elif runs == 4:
-                text = f"🔥 FOUR! {ball_emoji} {ball_type}"
+                text = f"🔥 FOUR!  {ball_emoji} {ball_type}"
             elif runs == 0:
-                text = f"🛡 DOT BALL! {ball_emoji} {ball_type}"
+                text = f"🛡 DOT BALL!  {ball_emoji} {ball_type}"
             else:
-                text = f"🏏 {runs} RUNS! {ball_emoji} {ball_type}"
+                text = f"🏏 {runs} RUNS!  {ball_emoji} {ball_type}"
 
         if wicket:
             i.wickets += 1
             if striker_before.uid not in i.dismissed:
                 i.dismissed.append(striker_before.uid)
 
-            replacement = self._next_batter(i)
-            if replacement is not None:
-                # A normal wicket in this game dismisses the striker.
-                replacement_before = i.batter
-                i.batter = replacement
+            if match.mode == "team":
+                replacement = self._next_batter(i)
+                if replacement is not None:
+                    i.batter = replacement
         else:
             i.runs += runs
             if runs == 4:
@@ -171,65 +178,49 @@ class CricketEngine:
             elif runs == 0:
                 i.dots += 1
 
-            # Odd completed runs change ends.
-            if runs % 2 == 1:
+            if match.mode == "team" and runs % 2 == 1:
                 self._swap_strike(i)
 
         i.last_ball = runs
         i.history.append({
             "runs": runs,
             "wicket": wicket,
-            "bat": int(bat),
-            "bowl": int(bowl),
+            "bat": bat,
+            "bowl": bowl,
             "ball_type": ball_type,
             "batter_uid": striker_before.uid,
             "bowler_uid": bowler_before.uid,
         })
 
-        # End of over: swap ends, then rotate the bowler. This happens
-        # after the delivery has been resolved, so the current bowler
-        # always completes the over.
-        over_complete = (
-            i.balls % match.balls_per_over == 0
-        )
+        over_complete = i.balls % match.balls_per_over == 0
         if over_complete:
-            self._swap_strike(i)
-            self._change_bowler(match)
+            if match.mode == "team":
+                self._swap_strike(i)
+                self._change_bowler(match)
 
         match.touch()
-        return Result(
-            runs=runs,
-            wicket=wicket,
-            text=text,
-            ball_type=ball_type,
-            ball_emoji=ball_emoji,
-        )
+        return Result(runs, wicket, text, ball_type, ball_emoji)
 
     def innings_complete(self, match):
         i = match.innings
         if not i:
             return False
 
-        max_balls = match.max_overs * match.balls_per_over
-
         if match.target is not None and i.runs >= match.target:
             return True
 
-        if i.balls >= max_balls:
+        if i.balls >= match.max_overs * match.balls_per_over:
             return True
 
         if match.mode == "classic":
-            # In 1-v-1, a wicket ends the innings/match.
             return i.wickets >= 1
 
-        # Team match: last available batter is out => all out.
-        return bool(i.batting_team) and (
-            i.wickets >= len(i.batting_team) - 1
-        )
+        return bool(i.batting_team) and i.wickets >= len(i.batting_team) - 1
 
     def switch(self, match):
         old = match.innings
-        assert old and match.opponent
+        if not old:
+            raise ValueError("No innings to switch.")
 
         match.first_score = old.runs
         match.target = old.runs + 1
@@ -237,23 +228,14 @@ class CricketEngine:
 
         if match.mode == "team":
             if old.batting_team == match.team_a:
-                batting = match.team_b
-                bowling = match.team_a
+                batting, bowling = match.team_b, match.team_a
             else:
-                batting = match.team_a
-                bowling = match.team_b
-            match.innings = self._new_innings(batting, bowling)
+                batting, bowling = match.team_a, match.team_b
+            match.innings = self._new_innings(batting, bowling, classic=False)
         else:
-            # In classic mode the two players swap roles; there is no
-            # striker/non-striker concept.
-            match.innings = Innings(
-                batter=old.bowler,
-                bowler=old.batter,
-                non_striker=None,
-                batting_team=[old.bowler],
-                bowling_team=[old.batter],
-                next_batter_index=1,
-                bowler_index=0,
+            # Classic 1v1: roles simply reverse.
+            match.innings = self._new_innings(
+                [old.bowler], [old.batter], classic=True
             )
 
         match.phase = Phase.BOWL
@@ -268,31 +250,20 @@ class CricketEngine:
 
         if i.runs >= match.target:
             if match.mode == "team":
-                return (
-                    match.team_a_captain
-                    if i.batting_team == match.team_a
-                    else match.team_b_captain
-                )
+                return match.team_a_captain if i.batting_team == match.team_a else match.team_b_captain
             return i.batter.uid
 
         max_balls = match.max_overs * match.balls_per_over
         all_out = (
-            match.mode == "classic" and i.wickets >= 1
-        ) or (
-            match.mode == "team"
-            and bool(i.batting_team)
-            and i.wickets >= len(i.batting_team) - 1
+            (match.mode == "classic" and i.wickets >= 1)
+            or (match.mode == "team" and bool(i.batting_team) and i.wickets >= len(i.batting_team) - 1)
         )
 
         if i.balls >= max_balls or all_out:
             if i.runs == match.target - 1:
                 return 0
             if match.mode == "team":
-                return (
-                    match.team_a_captain
-                    if i.bowling_team == match.team_a
-                    else match.team_b_captain
-                )
+                return match.team_a_captain if i.bowling_team == match.team_a else match.team_b_captain
             return i.bowler.uid
 
         return None
