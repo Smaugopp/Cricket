@@ -19,7 +19,7 @@ HELP = (
     "/team captain USER_ID — transfer captaincy\n"
     "/team vice USER_ID — set vice-captain\n"
     "/team leave — leave squad\n"
-    "/team disband — captain-only\n/team xi — view Playing XI\n/team xi set ID1 ID2 ... ID11 — captain sets XI\n/team xi clear — captain clears XI\n/team role USER_ID batter|bowler|all_rounder|keeper\n"
+    "/team disband — captain-only\n/team matchxi ID1 ID2 ID3 ID4 [ID5] — captain sets 4/5 match players\n/team matchxi clear — clear match players\n/team role USER_ID batter|bowler|all_rounder|keeper\n/teamplay TEAM_NAME [OVERS] [BALLS] — start team match\n/teamjoin TEAM_NAME — join team-match lobby\n"
 )
 
 @router.message(Command("teams"))
@@ -146,8 +146,8 @@ async def team_cmd(message: Message, teams, users):
         if sub == "view":
             xi = team.get("playing_xi", [])
             names = team.get("player_names", {})
-            if len(xi) != 11:
-                await message.answer("📋 Playing XI is not set yet. Captain: /team xi set ID1 ... ID11")
+            if len(xi) not in {4, 5}:
+                await message.answer("📋 Match players are not set. Captain: /team matchxi ID1 ID2 ID3 ID4 [ID5]")
                 return
             await message.answer("🏏 <b>PLAYING XI</b>\n\n" + "\n".join(
                 f"{n}. {names.get(str(uid), str(uid))}" for n, uid in enumerate(xi,1)

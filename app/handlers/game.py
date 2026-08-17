@@ -193,7 +193,7 @@ async def play(message: Message, matches, users, admin, db):
         return
 
     await users.ensure(message.from_user)
-    match = Match(message.chat.id, p(message), max_overs=2, balls_per_over=3)
+    match = Match(message.chat.id, p(message), max_overs=2, balls_per_over=6)
     matches.create(match)
     await persist_live(db, matches, match)
 
@@ -253,25 +253,33 @@ async def solo(message: Message, matches, users, admin, db):
     await users.ensure(message.from_user)
     user = p(message)
     ai = Player(-1, "Cricket Bot AI")
-    match = Match(message.chat.id, user, ai, max_overs=2, balls_per_over=3)
+    args = (message.text or "").split()
+    overs = int(args[1]) if len(args) > 1 and args[1].isdigit() else 2
+    balls = int(args[2]) if len(args) > 2 and args[2].isdigit() else 6
+    if overs not in {1, 2, 5, 10, 20}:
+        await message.answer("Use: /solo <1|2|5|10|20> [3|4|5|6]")
+        return
+    if balls not in {3, 4, 5, 6}:
+        await message.answer("Balls/over must be 3, 4, 5 or 6.")
+        return
+    match = Match(message.chat.id, user, ai, max_overs=overs, balls_per_over=balls)
     matches.create(match)
     CricketEngine().start(match)
     match.innings.batter = user
     match.innings.non_striker = None
     match.innings.batting_team = [user]
     match.innings.bowling_team = [ai]
-    # AI selects the delivery first; the player then supplies the shot.
-    match.pending_bowl_type = CricketAI.choose()
     match.phase = Phase.BAT
-    match.touch()
+    match.pending_bowl_type = CricketAI.choose()
     await persist_live(db, matches, match)
 
     await message.answer(
         "🤖 <b>SOLO MODE</b>\n\n"
         "You 🆚 Cricket Bot AI\n"
-        "🎯 2 overs • 3 legal balls/over\n\n"
-        "🎯 AI has selected its delivery.\n"
-        "🏏 Send your batting number <b>1–6 in the group</b>.",
+        "🎯 2 overs × 6 balls\n\n"
+        "🏏 <b>YOUR BATTING TURN</b>\n"
+        "The AI has already chosen its delivery.\n"
+        "Send your shot number <b>1–6 in the group</b>.",
         parse_mode="HTML",
     )
 
@@ -281,19 +289,23 @@ async def custom(message: Message, matches, users, admin, db):
     await admin.register_chat(message.chat.id, message.chat.type, getattr(message.chat, "title", None))
     parts = (message.text or "").split()
     overs = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 5
+    balls = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 6
     if overs not in {1, 2, 5, 10, 20}:
-        await message.answer("Use: /custom <1|2|5|10|20>")
+        await message.answer("Use: /custom <1|2|5|10|20> [3|4|5|6]")
+        return
+    if balls not in {3, 4, 5, 6}:
+        await message.answer("Balls/over must be 3, 4, 5 or 6.")
         return
     if matches.get(message.chat.id):
         await message.answer("🏏 A match is already active.")
         return
     await users.ensure(message.from_user)
-    match = Match(message.chat.id, p(message), max_overs=overs, balls_per_over=6)
+    match = Match(message.chat.id, p(message), max_overs=overs, balls_per_over=balls)
     matches.create(match)
     await persist_live(db, matches, match)
     await message.answer(
         f"🏏 <b>CUSTOM 1v1 MATCH</b>\n\n"
-        f"🎯 {overs} overs • 6 legal balls/over\n"
+        f"🎯 {overs} overs • {balls} legal balls/over\n"
         f"👤 {message.from_user.full_name}\n\n"
         "Type /join to enter.",
         parse_mode="HTML",
@@ -310,32 +322,30 @@ async def teamplay(message: Message, matches, teams, users, admin, db):
         await message.answer("🏏 A match is already active here.")
         return
 
-    parts = (message.text or "").split(maxsplit=2)
-    if len(parts) < 2:
+    args = (message.text or "").split()[1:]
+    if not args:
         await message.answer(
-            "Usage: <code>/teamplay TEAM_NAME [OVERS]</code>\n"
-            "Example: <code>/teamplay Tigers 2</code>",
+            "Usage: <code>/teamplay TEAM NAME [OVERS] [BALLS]</code>\n"
+            "Example: <code>/teamplay Tigers 2 6</code>",
             parse_mode="HTML",
         )
         return
 
-    team_name = parts[1]
-    # Allow names with spaces by parsing the final numeric token as overs.
+    balls = 6
+    if args[-1].isdigit() and int(args[-1]) in {3, 4, 5, 6}:
+        balls = int(args.pop())
     overs = 2
-    if len(parts) == 3:
-        tail = parts[2].split()
-        if tail and tail[-1].isdigit():
-            overs = int(tail[-1])
-            team_name = parts[1] if len(tail) == 1 else f"{parts[1]} {' '.join(tail[:-1])}"
-        else:
-            team_name = f"{parts[1]} {parts[2]}"
+    if args and args[-1].isdigit():
+        overs = int(args.pop())
+    team_name = " ".join(args).strip()
+
     if overs not in {1, 2, 5, 10, 20}:
         await message.answer("Overs must be 1, 2, 5, 10 or 20.")
         return
 
     team = await teams.get(message.chat.id, team_name)
     if not team:
-        await message.answer("❌ Team not found.")
+        await message.answer("❌ Team not found. Create it with /team create NAME")
         return
     if team["captain"] != message.from_user.id:
         await message.answer("❌ Only the team captain can start a team match.")
@@ -345,7 +355,7 @@ async def teamplay(message: Message, matches, teams, users, admin, db):
     if len(roster) not in {4, 5}:
         await message.answer(
             "❌ Team match needs exactly 4 or 5 players.\n"
-            "Captain: add 4–5 players to the squad, or use the match-XI option."
+            "Captain: add 4–5 players or set a 4/5-player match roster."
         )
         return
 
@@ -358,27 +368,21 @@ async def teamplay(message: Message, matches, teams, users, admin, db):
         captain,
         mode="team",
         max_overs=overs,
-        balls_per_over=6,
+        balls_per_over=balls,
         team_a=team_a,
         team_a_name=team["name"],
         team_a_captain=team["captain"],
     )
-    # Store lobby metadata in opponent as the future opposing captain slot.
-    match.phase = Phase.LOBBY
     matches.create(match)
     await persist_live(db, matches, match)
 
     await message.answer(
-        "🏏 <b>TEAM MATCH LOBBY</b>\n\n"
-        f"🟦 Team A: <b>{team['name']}</b>\n"
-        f"👑 Captain: {captain.name}\n"
-        f"👥 Players: <b>{len(team_a)}</b>\n"
-        f"🎯 {overs} overs • 6 balls/over\n\n"
-        "Opposing captain: use\n"
-        "<code>/teamjoin YOUR_TEAM_NAME</code>",
+        "🏟️ <b>TEAM MATCH LOBBY</b>\n\n"
+        f"🟦 <b>{team['name']}</b> • {len(team_a)} players\n"
+        f"🎯 <b>{overs} overs × {balls} balls</b>\n\n"
+        "Opposing captain: <code>/teamjoin YOUR TEAM NAME</code>",
         parse_mode="HTML",
     )
-
 
 @router.message(Command("teamjoin"))
 async def teamjoin(message: Message, matches, teams, users, admin, db, bot):
@@ -457,8 +461,8 @@ async def status(message: Message, matches):
     i = match.innings
     text = (
         f"🏏 <b>LIVE SCORE</b>\n\n"
-        f"🏏 {i.batter.name}*"
-        + (f" / {i.non_striker.name}" if i.non_striker else "")
+        f"🏏 Batter: <b>{i.batter.name}</b>"
+        + (f"\n🏏 Non-striker: <b>{i.non_striker.name}</b>" if match.mode == "team" and i.non_striker else "")
         + f"\n📊 <b>{score_text(match)}</b>\n"
         f"🎯 Bowler: <b>{i.bowler.name}</b>\n"
         f"⚾ Legal balls: {i.balls}/{match.max_overs * match.balls_per_over}"
@@ -472,6 +476,25 @@ async def status(message: Message, matches):
         text += f"\n🎯 Target: <b>{match.target}</b>"
     await message.answer(text, parse_mode="HTML")
 
+
+async def _send_batting_prompt(bot, match):
+    """Show the live cricket animation in the group, never in the bowler DM."""
+    i = match.innings
+    if not i:
+        return
+    caption = (
+        "━━━━━━━━━━━━━━━━━━\n"
+        "🏏 <b>YOUR BATTING TURN</b>\n\n"
+        f"👤 Batter: <b>{i.batter.name}</b>\n"
+        "🔢 Choose your shot: <b>1–6</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━"
+    )
+    try:
+        from aiogram.types import FSInputFile
+        gif = FSInputFile("assets/cricket_live.gif")
+        await bot.send_animation(match.chat_id, gif, caption=caption, parse_mode="HTML")
+    except Exception:
+        await bot.send_message(match.chat_id, caption, parse_mode="HTML")
 
 async def _resolve_result(bot, message, match, users, db, matches, settings, bat, bowl):
     engine = CricketEngine()
@@ -519,16 +542,9 @@ async def _resolve_result(bot, message, match, users, db, matches, settings, bat
         await _finish_match_to_chat(bot, match, users, db, matches, winner)
         return
 
-    await bot.send_message(
-        match.chat_id,
-        (
-            f"⚾ <b>Next ball:</b> "
-            f"{match.innings.batter.name} is on strike.\n"
-            f"🎯 {match.innings.bowler.name} will bowl first — check your DM."
-        ),
-        parse_mode="HTML",
-    )
     await _begin_next_ball(bot, db, matches, match)
+    # _begin_next_ball handles the private delivery choice. The batting
+    # animation is sent only after the bowler submits it.
 
 
 async def _group_number_input(message, matches, users, db, settings, bot):
@@ -546,11 +562,14 @@ async def _group_number_input(message, matches, users, db, settings, bot):
     i = match.innings
     uid = message.from_user.id
 
-    # SOLO: AI delivery is chosen before the user's shot.
+    # SOLO: AI chooses the delivery after the user chooses the shot.
     if match.opponent and match.opponent.uid == -1:
-        if match.phase != Phase.BAT or uid != i.batter.uid or match.pending_bowl_type is None:
+        if match.phase != Phase.BAT or uid != i.batter.uid:
             return
         bowl = match.pending_bowl_type
+        if bowl is None:
+            match.pending_bowl_type = CricketAI.choose()
+            bowl = match.pending_bowl_type
         match.pending_bowl_type = None
         result = CricketEngine().play(
             match, int(text), bowl, settings.owner_id
@@ -572,19 +591,16 @@ async def _group_number_input(message, matches, users, db, settings, bot):
                     "🎯 Your bowling turn is now private.",
                     parse_mode="HTML",
                 )
-                await _begin_next_ball(bot, db, matches, match)
                 return
             await _finish_match_to_chat(
                 bot, match, users, db, matches, CricketEngine().winner(match)
             )
         else:
-            match.pending_bowl_type = CricketAI.choose()
             match.phase = Phase.BAT
             match.touch()
             await persist_live(db, matches, match)
             await message.answer(
-                "🎯 AI has chosen its delivery.\n"
-                "🏏 Next ball — send <b>1–6</b>."
+                f"⚾ Next ball — send <b>1–6</b> when prompted."
             )
         return
 
@@ -670,12 +686,7 @@ async def _dm_bowling_input(message, matches, users, db, settings, bot):
         match.phase = Phase.BAT
         match.touch()
         await persist_live(db, matches, match)
-        await bot.send_message(
-            match.chat_id,
-            f"🏏 <b>{match.innings.batter.name}</b>, your turn.\n"
-            "Send your shot/run number <b>1–6 in the group</b>.",
-            parse_mode="HTML",
-        )
+        await _send_batting_prompt(bot, match)
         await message.answer(
             f"🔒 <b>Delivery locked:</b> {BOWLING_TYPES[bowl][1]} {BOWLING_TYPES[bowl][0]}\n"
             "Waiting for the striker.",
@@ -689,7 +700,7 @@ async def _dm_bowling_input(message, matches, users, db, settings, bot):
     )
 
 
-@router.message(F.text.regexp(r"^[1-6]$"))
+@router.message()
 async def number_input(message: Message, matches, users, db, settings, bot):
     if message.chat.type == "private":
         async with _match_lock(message.from_user.id):

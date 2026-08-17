@@ -9,8 +9,8 @@ async def commands(message: Message):
     await message.answer(
         "🏏 <b>CRICKET ARENA — COMMAND CENTER</b>\n\n"
         "🎮 <b>PLAY</b>\n"
-        "/play /join /solo /custom /score /status /cancel\n"
-        "🏏 Bat in group • 🎯 Bowl privately in DM\n\n"
+        "/play [OVERS] [BALLS] /join /solo [OVERS] [BALLS] /custom OVERS [BALLS] /score /status /cancel\n"
+        "🎯 Bowler chooses first in DM • 🏏 Batter chooses second in group\n\n"
         "👥 <b>TEAMS</b>\n"
         "/teams /team create /team my /team roster /team add /team remove\n"
         "/team captain /team vice /team xi /team matchxi /team role /team leave /team disband\n\n"
@@ -42,7 +42,7 @@ async def rules(message: Message):
     await message.answer(
         "🏏 <b>CRICKET RULES</b>\n\n"
         "1. Batter sends 1–6 in the group.\n"
-        "2. Bowler receives a private DM and chooses a numbered delivery.\n"
+        "2. Bowler chooses a numbered delivery privately.\n"
         "   1 Swing • 2 Yorker • 3 Bouncer • 4 Slower • 5 Inswing • 6 Outswing.\n"
         "3. The bowling number stays private.\n"
         "4. Same batter number + delivery number = wicket.\n"
