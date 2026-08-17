@@ -99,8 +99,8 @@ class TeamService:
     async def set_xi(self, team, players):
         roster = set(team.get("players", []))
         players = list(dict.fromkeys(players))
-        if len(players) != 11:
-            return False, "Playing XI must contain exactly 11 players."
+        if len(players) not in {4, 5}:
+            return False, "Match players must contain exactly 4 or 5 players."
         if any(uid not in roster for uid in players):
             return False, "Every XI player must belong to the squad."
         await self.c.update_one({"_id": team["_id"]},
