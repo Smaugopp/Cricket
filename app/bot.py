@@ -53,6 +53,7 @@ async def run():
         BotCommand(command="join", description="Join the current 1v1 match"),
         BotCommand(command="teamplay", description="Start a team match"),
         BotCommand(command="teamjoin", description="Join a team-match lobby"),
+        BotCommand(command="cancel", description="Cancel active match"),
         BotCommand(command="solo", description="Play against AI"),
         BotCommand(command="score", description="Live score"),
         BotCommand(command="profile", description="Career profile"),
@@ -61,7 +62,6 @@ async def run():
         BotCommand(command="league", description="League competitions"),
         BotCommand(command="leaderboard", description="Player leaderboard"),
         BotCommand(command="daily", description="Daily reward"),
-        BotCommand(command="cancel", description="Cancel active match"),
         BotCommand(command="help", description="How to play"),
     ])
     logging.info("Cricket bot started | owner=%s | group support enabled",settings.owner_id)
