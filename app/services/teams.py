@@ -121,3 +121,38 @@ class TeamService:
         roles[str(uid)]=role
         await self.c.update_one({"_id":team["_id"]},{"$set":{"roles":roles,"updated_at":utcnow()}})
         return True, f"Role set to {role}."
+
+
+    async def set_match_xi(self, team, players):
+        roster = set(team.get("players", []))
+        players = list(dict.fromkeys(players))
+        if len(players) not in {4, 5}:
+            return False, "Match XI must contain exactly 4 or 5 players."
+        if any(uid not in roster for uid in players):
+            return False, "Every match player must belong to the squad."
+        await self.c.update_one(
+            {"_id": team["_id"]},
+            {"$set": {"match_xi": players, "updated_at": utcnow()}},
+        )
+        return True, "Match XI saved."
+
+    async def clear_match_xi(self, team):
+        await self.c.update_one(
+            {"_id": team["_id"]},
+            {"$unset": {"match_xi": ""}, "$set": {"updated_at": utcnow()}},
+        )
+        return True
+
+    async def match_roster(self, team):
+        """Return the 4/5-player roster used for a team match."""
+        xi = team.get("match_xi") or []
+        if len(xi) in {4, 5}:
+            names = team.get("player_names", {})
+            return [{"uid": uid, "name": names.get(str(uid), str(uid))} for uid in xi]
+
+        players = team.get("players", [])
+        if len(players) in {4, 5}:
+            names = team.get("player_names", {})
+            return [{"uid": uid, "name": names.get(str(uid), str(uid))} for uid in players]
+
+        return []
