@@ -61,6 +61,7 @@ async def run():
         BotCommand(command="league", description="League competitions"),
         BotCommand(command="leaderboard", description="Player leaderboard"),
         BotCommand(command="daily", description="Daily reward"),
+        BotCommand(command="cancel", description="Cancel active match"),
         BotCommand(command="help", description="How to play"),
     ])
     logging.info("Cricket bot started | owner=%s | group support enabled",settings.owner_id)
