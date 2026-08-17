@@ -7,8 +7,46 @@ router = Router()
 def avg(doc, a, b):
     return round(doc.get(a, 0) / b, 2) if b else 0
 
-@router.message(Command("profile"))
+
 @router.message(Command("stats"))
+async def bot_stats(message: Message, settings, db, users):
+    if message.from_user.id != settings.owner_id:
+        doc = await users.get(message.from_user.id)
+        if not doc:
+            await users.ensure(message.from_user)
+            doc = await users.get(message.from_user.id)
+        await message.answer(
+            "📊 <b>YOUR STATS</b>\n\n"
+            f"🏏 Matches: <b>{doc.get('matches', 0)}</b>\n"
+            f"🏆 Wins: <b>{doc.get('wins', 0)}</b>\n"
+            f"💔 Losses: <b>{doc.get('losses', 0)}</b>\n"
+            f"🏏 Runs: <b>{doc.get('runs', 0)}</b>\n"
+            f"🎯 Wickets: <b>{doc.get('wickets', 0)}</b>\n"
+            f"💥 Sixes: <b>{doc.get('sixes', 0)}</b>",
+            parse_mode="HTML",
+        )
+        return
+
+    users_count = await db.users.count_documents({})
+    group_count = await db.chats.count_documents({"chat_type": {"$in": ["group", "supergroup"]}})
+    private_count = await db.chats.count_documents({"chat_type": "private"})
+    live_count = await db.live_matches.count_documents({})
+    teams_count = await db.teams.count_documents({})
+    matches_count = await db.matches.count_documents({})
+    await message.answer(
+        "📡 <b>CRICKET ARENA • OWNER DASHBOARD</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 <b>Users:</b> {users_count:,}\n"
+        f"👥 <b>Groups:</b> {group_count:,}\n"
+        f"💬 <b>Private chats:</b> {private_count:,}\n"
+        f"🏏 <b>Total matches:</b> {matches_count:,}\n"
+        f"🔴 <b>Live matches:</b> {live_count:,}\n"
+        f"👥 <b>Teams:</b> {teams_count:,}\n",
+        parse_mode="HTML",
+    )
+
+@router.message(Command("profile"))
+@router.message(Command("mystats"))
 async def profile(message: Message, users):
     doc = await users.get(message.from_user.id)
     if not doc:
@@ -68,10 +106,19 @@ async def leaderboard(message: Message, users):
     aliases = {"rating":"rating","wins":"wins","runs":"runs","wickets":"wickets","xp":"xp","sixes":"sixes"}
     if len(parts) > 1 and parts[1].lower() in aliases:
         field = aliases[parts[1].lower()]
-    rows = await users.leaderboard(field)
-    lines = [f"🏆 <b>LEADERBOARD — {field.upper()}</b>", ""]
+    rows = await users.leaderboard(field, limit=10)
+    if not rows:
+        await message.answer("🏆 <b>LEADERBOARD</b>\n\nNo players yet.", parse_mode="HTML")
+        return
+    medals = ["🥇", "🥈", "🥉"]
+    lines = [
+        "🏆 <b>CRICKET ARENA LEADERBOARD</b>",
+        f"<i>Top 10 by {field.title()}</i>",
+        "",
+    ]
     for idx, row in enumerate(rows, 1):
-        lines.append(f"{idx}. {row.get('name','Player')} — <b>{row.get(field,0)}</b>")
+        icon = medals[idx - 1] if idx <= 3 else f"{idx}."
+        lines.append(f"{icon} <b>{row.get('name', 'Player')}</b> — {row.get(field, 0)}")
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 @router.message(Command("history"))
