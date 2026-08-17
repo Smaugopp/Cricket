@@ -41,17 +41,24 @@ class CricketEngine:
         )
 
     def start(self, match):
-        """Start a classic 1-v-1 match. Bowling happens before batting."""
+        """Start a classic 1-v-1 match: one batter, one bowler."""
         assert match.opponent
         match.mode = "classic"
 
         if random.choice([True, False]):
-            batting = [match.creator, match.opponent]
+            batter, bowler = match.creator, match.opponent
         else:
-            batting = [match.opponent, match.creator]
+            batter, bowler = match.opponent, match.creator
 
-        bowling = [p for p in [match.creator, match.opponent] if p.uid != batting[0].uid]
-        match.innings = self._new_innings(batting, bowling)
+        match.innings = Innings(
+            batter=batter,
+            bowler=bowler,
+            non_striker=None,
+            batting_team=[batter],
+            bowling_team=[bowler],
+            next_batter_index=1,
+            bowler_index=0,
+        )
         match.phase = Phase.BOWL
         match.pending_bat = None
         match.pending_bowl_type = None
@@ -123,12 +130,12 @@ class CricketEngine:
         batter_controller = self._controller_uid(match, striker_before)
         bowler_controller = self._controller_uid(match, bowler_before)
 
-        if striker_before.uid == owner_id or batter_controller == owner_id:
+        if batter_controller == owner_id:
             runs, wicket = random.choice([4, 6]), False
             text = "👑 OWNER POWER! " + (
                 "🔥 FOUR!" if runs == 4 else "💥 SIX!"
             )
-        elif bowler_before.uid == owner_id or bowler_controller == owner_id:
+        elif bowler_controller == owner_id:
             runs, wicket = 0, True
             text = "👑 OWNER BOWLING POWER! 🎯 WICKET!"
         elif int(bat) == int(bowl):
@@ -237,9 +244,16 @@ class CricketEngine:
                 bowling = match.team_b
             match.innings = self._new_innings(batting, bowling)
         else:
-            match.innings = self._new_innings(
-                [old.bowler, old.batter],
-                [old.batter, old.bowler],
+            # In classic mode the two players swap roles; there is no
+            # striker/non-striker concept.
+            match.innings = Innings(
+                batter=old.bowler,
+                bowler=old.batter,
+                non_striker=None,
+                batting_team=[old.bowler],
+                bowling_team=[old.batter],
+                next_batter_index=1,
+                bowler_index=0,
             )
 
         match.phase = Phase.BOWL

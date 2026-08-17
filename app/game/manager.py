@@ -101,7 +101,7 @@ class MatchManager:
             creator=Player(doc["creator"]["uid"], doc["creator"]["name"]),
             opponent=Player(doc["opponent"]["uid"], doc["opponent"]["name"]) if doc.get("opponent") else None,
             max_overs=doc.get("max_overs", 2),
-            balls_per_over=doc.get("balls_per_over", 3),
+            balls_per_over=doc.get("balls_per_over", 6),
             phase=Phase(doc.get("phase", "lobby")),
             innings_no=doc.get("innings_no", 1),
             first_score=doc.get("first_score"),

@@ -49,7 +49,7 @@ class Match:
     creator: Player
     opponent: Player | None = None
     max_overs: int = 2
-    balls_per_over: int = 3
+    balls_per_over: int = 6
     phase: Phase = Phase.LOBBY
     innings_no: int = 1
     innings: Innings | None = None
