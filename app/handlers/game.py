@@ -1,9 +1,10 @@
 import asyncio
+import os
 import time
 
-from aiogram import Router, F
+from aiogram import Router
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, FSInputFile
 
 from app.game.models import Player, Match, Phase
 from app.game.engine import CricketEngine, BOWLING_TYPES
@@ -11,7 +12,6 @@ from app.game.ai import CricketAI
 from app.utils import mention
 
 router = Router()
-
 _MATCH_LOCKS = {}
 
 
@@ -36,20 +36,48 @@ def name(match, uid):
 
 def score_text(match):
     i = match.innings
+    if not i:
+        return "0/0 • 0.0 overs"
     return f"{i.runs}/{i.wickets} • {i.over(match.balls_per_over)} overs"
+
+
+def parse_format(parts, default_overs=2, default_balls=6):
+    """Parse optional [OVERS] [BALLS_PER_OVER] consistently across modes."""
+    nums = []
+    for raw in reversed(parts):
+        if raw.isdigit():
+            nums.append(int(raw))
+            if len(nums) == 2:
+                break
+        else:
+            break
+    nums.reverse()
+
+    overs, balls = default_overs, default_balls
+    if len(nums) == 1:
+        overs = nums[0]
+    elif len(nums) == 2:
+        overs, balls = nums
+
+    if not 1 <= overs <= 20:
+        raise ValueError("Overs must be between 1 and 20.")
+    if balls not in {3, 4, 5, 6}:
+        raise ValueError("Balls per over must be 3, 4, 5 or 6.")
+    return overs, balls
 
 
 def bowling_menu():
     return (
-        "🎯 <b>YOUR BOWLING TURN</b>\n\n"
-        "Choose a delivery and send its number <b>in this DM</b>:\n\n"
+        "🎯 <b>BOWLING TURN</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "Choose your delivery privately:\n\n"
         "1️⃣ 🌪️ Swing\n"
         "2️⃣ 🎯 Yorker\n"
         "3️⃣ ⬆️ Bouncer\n"
         "4️⃣ 🐢 Slower Ball\n"
         "5️⃣ ↩️ Inswing\n"
         "6️⃣ ↪️ Outswing\n\n"
-        "🔒 Your choice stays private."
+        "🔒 Your delivery stays private."
     )
 
 
@@ -65,16 +93,55 @@ async def send_bowler_dm(bot, match):
     if not i:
         return False
     try:
-        team_line = (
-            f"\n🏏 Team: <b>{_team_label(match, i.bowler.uid)}</b>\n"
-            if match.mode == "team" else ""
-        )
-        await bot.send_message(
-            i.bowler.uid,
-            bowling_menu() + team_line
-        )
+        team_line = f"\n🏏 Team: <b>{_team_label(match, i.bowler.uid)}</b>\n" if match.mode == "team" else ""
+        await bot.send_message(i.bowler.uid, bowling_menu() + team_line, parse_mode="HTML")
         return True
     except Exception:
+        return False
+
+
+async def send_batting_prompt(bot, match):
+    """Public batting UI. GIF is deliberately sent to the group, never DM."""
+    i = match.innings
+    if not i:
+        return False
+
+    if match.mode == "classic":
+        caption = (
+            "━━━━━━━━━━━━━━━━━━\n"
+            "🏏 <b>YOUR BATTING TURN</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 <b>{i.batter.name}</b>\n"
+            f"📊 Score: <b>{score_text(match)}</b>\n\n"
+            "Send your shot number <b>1–6</b> in the group.\n"
+            "🔐 The bowler's delivery remains hidden."
+        )
+    else:
+        caption = (
+            "━━━━━━━━━━━━━━━━━━\n"
+            "🏏 <b>YOUR BATTING TURN</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            f"🏏 Striker: <b>{i.batter.name}</b>\n"
+            f"👤 Non-striker: <b>{i.non_striker.name if i.non_striker else '—'}</b>\n"
+            f"🎯 Bowler: <b>{i.bowler.name}</b>\n"
+            f"📊 Score: <b>{score_text(match)}</b>\n\n"
+            "Send your shot number <b>1–6</b> in the group."
+        )
+
+    gif = "assets/cricket_live.gif"
+    try:
+        if os.path.exists(gif):
+            await bot.send_animation(
+                match.chat_id,
+                FSInputFile(gif),
+                caption=caption,
+                parse_mode="HTML",
+            )
+        else:
+            await bot.send_message(match.chat_id, caption, parse_mode="HTML")
+        return True
+    except Exception:
+        await bot.send_message(match.chat_id, caption, parse_mode="HTML")
         return False
 
 
@@ -90,10 +157,8 @@ async def clear_live(db, chat_id):
     await db.live_matches.delete_one({"chat_id": chat_id})
 
 
-def _active_side_name(match, team):
-    if team == "a":
-        return match.team_a_name or "Team A"
-    return match.team_b_name or "Team B"
+def _active_side_name(match, side):
+    return match.team_a_name if side == "a" else match.team_b_name
 
 
 async def _finish_match_to_chat(bot, match, users, db, matches, winner):
@@ -110,10 +175,8 @@ async def _finish_match_to_chat(bot, match, users, db, matches, winner):
             await users.record_match(match.team_b_captain, tied=True)
     else:
         if match.mode == "team":
-            winner_name = (
-                _active_side_name(match, "a")
-                if winner == match.team_a_captain
-                else _active_side_name(match, "b")
+            winner_name = _active_side_name(
+                match, "a" if winner == match.team_a_captain else "b"
             )
             loser = (
                 match.team_b_captain
@@ -121,21 +184,25 @@ async def _finish_match_to_chat(bot, match, users, db, matches, winner):
                 else match.team_a_captain
             )
         else:
-            winner_name = name(match, winner)
-            loser = (
-                match.opponent.uid
-                if match.opponent and winner == match.creator.uid
-                else match.creator.uid
-            )
+            if match.mode == "classic" and winner == -1:
+                winner_name = "Cricket Bot AI"
+                loser = match.creator.uid
+            else:
+                winner_name = name(match, winner)
+                loser = (
+                    match.opponent.uid
+                    if match.opponent and winner == match.creator.uid
+                    else match.creator.uid
+                )
 
         await users.record_match(winner, won=True)
-        if loser is not None and loser != -1:
+        if loser not in (None, -1):
             await users.record_match(loser, lost=True)
 
     await db.matches.insert_one({
         "chat_id": match.chat_id,
         "mode": match.mode,
-        "players": [p.uid for p in match.players()],
+        "players": [x.uid for x in match.players()],
         "winner": winner,
         "team_a_name": match.team_a_name,
         "team_b_name": match.team_b_name,
@@ -148,11 +215,13 @@ async def _finish_match_to_chat(bot, match, users, db, matches, winner):
 
     await bot.send_message(
         match.chat_id,
-        "━━━━━━━━━━━━━━\n"
-        "🏆 <b>MATCH SUMMARY</b>\n\n"
-        f"🏏 First innings: <b>{match.first_score or 0}</b>\n"
-        f"🏏 Second innings: <b>{i.runs if i else 0}/{i.wickets if i else 0}</b>\n\n"
-        f"🏆 <b>RESULT: {winner_name}</b>",
+        "━━━━━━━━━━━━━━━━━━\n"
+        "🏆 <b>MATCH COMPLETE</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"🏏 Innings 1: <b>{match.first_score or 0}</b>\n"
+        f"🏏 Innings 2: <b>{i.runs if i else 0}/{i.wickets if i else 0}</b>\n"
+        f"⚙️ Format: <b>{match.max_overs} overs × {match.balls_per_over}</b>\n\n"
+        f"👑 <b>WINNER: {winner_name}</b>",
         parse_mode="HTML",
     )
     await clear_live(db, match.chat_id)
@@ -161,8 +230,22 @@ async def _finish_match_to_chat(bot, match, users, db, matches, winner):
 
 
 async def _begin_next_ball(bot, db, matches, match):
-    """Every normal delivery starts with the bowler, not the batter."""
     i = match.innings
+    if not i:
+        return
+
+    # Solo first innings: AI is the hidden bowler. Its delivery is selected
+    # before the public batting prompt, but never exposed to the player.
+    if match.mode == "classic" and match.opponent and match.opponent.uid == -1 and match.innings_no == 1:
+        match.pending_bat = None
+        if match.pending_bowl_type is None:
+            match.pending_bowl_type = CricketAI.choose()
+        match.phase = Phase.BAT
+        match.touch()
+        await persist_live(db, matches, match)
+        await send_batting_prompt(bot, match)
+        return
+
     match.pending_bat = None
     match.pending_bowl_type = None
     match.phase = Phase.BOWL
@@ -172,14 +255,69 @@ async def _begin_next_ball(bot, db, matches, match):
     dm_ok = await send_bowler_dm(bot, match)
     if not dm_ok:
         controller = match.controller_uid_for(i.bowler)
+        target = controller or i.bowler.uid
         await bot.send_message(
             match.chat_id,
-            f"⚠️ {mention(controller, i.bowler.name)}, "
-            "the current bowler must open the bot in DM and send /start."
-            if controller else
-            "⚠️ Current bowler must open the bot in DM and send /start.",
+            f"⚠️ <b>Bowling DM required</b>\n"
+            f"{mention(target, i.bowler.name)} please open the bot in private chat "
+            "and send /start.",
             parse_mode="HTML",
         )
+
+
+async def _resolve_result(bot, match, users, db, matches, settings, bat, bowl):
+    engine = CricketEngine()
+    before_batter = match.innings.batter
+    before_bowler = match.innings.bowler
+
+    result = engine.play(match, bat, bowl, settings.owner_id)
+    await persist_live(db, matches, match)
+
+    wicket_line = f"❌ <b>{before_batter.name} OUT</b>\n" if result.wicket else ""
+    next_line = ""
+    if result.wicket and match.mode == "team" and match.innings.batter.uid != before_batter.uid:
+        next_line = f"➡️ Next batter: <b>{match.innings.batter.name}</b>\n"
+
+    await bot.send_message(
+        match.chat_id,
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"⚾ <b>BALL {match.innings.over(match.balls_per_over)}</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"🏏 Batter: <b>{before_batter.name}</b>\n"
+        f"🎯 Bowler: <b>{before_bowler.name}</b>\n"
+        f"🎯 Delivery: <b>{result.ball_type}</b>\n\n"
+        f"{result.text}\n"
+        f"{wicket_line}"
+        f"{next_line}"
+        f"📊 Score: <b>{score_text(match)}</b>",
+        parse_mode="HTML",
+    )
+
+    if engine.innings_complete(match):
+        if match.innings_no == 1:
+            engine.switch(match)
+            await persist_live(db, matches, match)
+            await bot.send_message(
+                match.chat_id,
+                "━━━━━━━━━━━━━━━━━━\n"
+                "🏁 <b>INNINGS BREAK</b>\n"
+                "━━━━━━━━━━━━━━━━━━\n\n"
+                f"🎯 Target: <b>{match.target}</b>\n"
+                f"🏏 Batting: <b>{match.innings.batter.name}</b>\n"
+                f"🎯 Bowling: <b>{match.innings.bowler.name}</b>\n\n"
+                "The new bowler will choose the delivery first.",
+                parse_mode="HTML",
+            )
+            await _begin_next_ball(bot, db, matches, match)
+            return
+
+        await _finish_match_to_chat(
+            bot, match, users, db, matches, engine.winner(match)
+        )
+        return
+
+    # Engine already changed the bowler after an over.
+    await _begin_next_ball(bot, db, matches, match)
 
 
 @router.message(Command("play"))
@@ -187,21 +325,31 @@ async def play(message: Message, matches, users, admin, db):
     if message.chat.type not in {"group", "supergroup"}:
         await message.answer("👥 Use /play inside a group or supergroup.")
         return
+
     await admin.register_chat(message.chat.id, message.chat.type, getattr(message.chat, "title", None))
     if matches.get(message.chat.id):
         await message.answer("🏏 A match is already active here.")
         return
 
+    try:
+        overs, balls = parse_format((message.text or "").split()[1:], 2, 6)
+    except ValueError as e:
+        await message.answer(f"❌ {e}\nUse: <code>/play [overs] [balls]</code>", parse_mode="HTML")
+        return
+
     await users.ensure(message.from_user)
-    match = Match(message.chat.id, p(message), max_overs=2, balls_per_over=6)
+    match = Match(message.chat.id, p(message), max_overs=overs, balls_per_over=balls)
     matches.create(match)
     await persist_live(db, matches, match)
 
     await message.answer(
-        "🏏 <b>1v1 CRICKET LOBBY</b>\n\n"
-        "🎯 2 overs • 3 legal balls/over\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "🏏 <b>1v1 CRICKET LOBBY</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"⚙️ Format: <b>{overs} overs × {balls} balls</b>\n"
         f"👤 {mention(match.creator.uid, match.creator.name)}\n\n"
-        "Type /join to enter.",
+        "Waiting for opponent…\n"
+        "Use <code>/join</code> to enter.",
         parse_mode="HTML",
     )
 
@@ -212,8 +360,9 @@ async def join(message: Message, matches, users, admin, db, bot):
         await message.answer("👥 Join matches from the group.")
         return
     await admin.register_chat(message.chat.id, message.chat.type, getattr(message.chat, "title", None))
+
     match = matches.get(message.chat.id)
-    if not match:
+    if not match or match.mode != "classic":
         await message.answer("❌ No 1v1 lobby. Use /play.")
         return
     if match.opponent:
@@ -230,84 +379,88 @@ async def join(message: Message, matches, users, admin, db, bot):
 
     i = match.innings
     await message.answer(
-        "🏏 <b>1v1 MATCH STARTED!</b>\n\n"
-        f"{mention(match.creator.uid, match.creator.name)} 🆚 "
+        "━━━━━━━━━━━━━━━━━━\n"
+        "🏏 <b>1v1 MATCH READY</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"{mention(match.creator.uid, match.creator.name)}  🆚  "
         f"{mention(match.opponent.uid, match.opponent.name)}\n\n"
-        "🪙 Toss complete.\n"
+        f"⚙️ <b>{match.max_overs} overs × {match.balls_per_over} balls</b>\n"
         f"🏏 Batting: <b>{i.batter.name}</b>\n"
         f"🎯 Bowling: <b>{i.bowler.name}</b>\n\n"
-        "🎯 <b>Bowler goes FIRST.</b>\n"
-        "A private bowling prompt has been sent.",
+        "🎯 <b>Bowler goes first.</b>\n"
+        "Your private delivery menu has been sent.",
         parse_mode="HTML",
     )
     await _begin_next_ball(bot, db, matches, match)
 
 
 @router.message(Command("solo"))
-async def solo(message: Message, matches, users, admin, db):
+async def solo(message: Message, matches, users, admin, db, bot):
     await admin.register_chat(message.chat.id, message.chat.type, getattr(message.chat, "title", None))
     if matches.get(message.chat.id):
-        await message.answer("🏏 A match is already active.")
+        await message.answer("🏏 A match is already active here.")
+        return
+
+    try:
+        overs, balls = parse_format((message.text or "").split()[1:], 2, 6)
+    except ValueError as e:
+        await message.answer(f"❌ {e}\nUse: <code>/solo [overs] [balls]</code>", parse_mode="HTML")
         return
 
     await users.ensure(message.from_user)
     user = p(message)
     ai = Player(-1, "Cricket Bot AI")
-    args = (message.text or "").split()
-    overs = int(args[1]) if len(args) > 1 and args[1].isdigit() else 2
-    balls = int(args[2]) if len(args) > 2 and args[2].isdigit() else 6
-    if overs not in {1, 2, 5, 10, 20}:
-        await message.answer("Use: /solo <1|2|5|10|20> [3|4|5|6]")
-        return
-    if balls not in {3, 4, 5, 6}:
-        await message.answer("Balls/over must be 3, 4, 5 or 6.")
-        return
     match = Match(message.chat.id, user, ai, max_overs=overs, balls_per_over=balls)
     matches.create(match)
-    CricketEngine().start(match)
-    match.innings.batter = user
-    match.innings.non_striker = None
-    match.innings.batting_team = [user]
-    match.innings.bowling_team = [ai]
+
+    # Solo first innings: AI is the bowler. The AI chooses privately/internal,
+    # then the human gets the public batting prompt with the GIF.
+    match.innings = CricketEngine()._new_innings([user], [ai], classic=True)
     match.phase = Phase.BAT
     match.pending_bowl_type = CricketAI.choose()
+    match.touch()
     await persist_live(db, matches, match)
 
     await message.answer(
-        "🤖 <b>SOLO MODE</b>\n\n"
-        "You 🆚 Cricket Bot AI\n"
-        "🎯 2 overs × 6 balls\n\n"
-        "🏏 <b>YOUR BATTING TURN</b>\n"
-        "The AI has already chosen its delivery.\n"
-        "Send your shot number <b>1–6 in the group</b>.",
+        "━━━━━━━━━━━━━━━━━━\n"
+        "🤖 <b>SOLO MATCH</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"⚙️ Format: <b>{overs} overs × {balls} balls</b>\n"
+        "You 🆚 Cricket Bot AI\n\n"
+        "🎯 The AI has secretly chosen the delivery.\n"
+        "Your batting card is below.",
         parse_mode="HTML",
     )
+    await send_batting_prompt(bot, match)
 
 
 @router.message(Command("custom"))
 async def custom(message: Message, matches, users, admin, db):
-    await admin.register_chat(message.chat.id, message.chat.type, getattr(message.chat, "title", None))
-    parts = (message.text or "").split()
-    overs = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 5
-    balls = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 6
-    if overs not in {1, 2, 5, 10, 20}:
-        await message.answer("Use: /custom <1|2|5|10|20> [3|4|5|6]")
+    if message.chat.type not in {"group", "supergroup"}:
+        await message.answer("👥 Use /custom inside a group.")
         return
-    if balls not in {3, 4, 5, 6}:
-        await message.answer("Balls/over must be 3, 4, 5 or 6.")
+
+    raw = (message.text or "").split()[1:]
+    try:
+        overs, balls = parse_format(raw, 5, 6)
+    except ValueError as e:
+        await message.answer(f"❌ {e}\nUse: <code>/custom [overs] [balls]</code>", parse_mode="HTML")
         return
+
     if matches.get(message.chat.id):
-        await message.answer("🏏 A match is already active.")
+        await message.answer("🏏 A match is already active here.")
         return
+
+    await admin.register_chat(message.chat.id, message.chat.type, getattr(message.chat, "title", None))
     await users.ensure(message.from_user)
     match = Match(message.chat.id, p(message), max_overs=overs, balls_per_over=balls)
     matches.create(match)
     await persist_live(db, matches, match)
+
     await message.answer(
-        f"🏏 <b>CUSTOM 1v1 MATCH</b>\n\n"
-        f"🎯 {overs} overs • {balls} legal balls/over\n"
-        f"👤 {message.from_user.full_name}\n\n"
-        "Type /join to enter.",
+        "⚙️ <b>CUSTOM 1v1 LOBBY</b>\n\n"
+        f"🎯 Format: <b>{overs} overs × {balls} balls</b>\n"
+        "Use <code>/join</code> to enter.",
         parse_mode="HTML",
     )
 
@@ -317,30 +470,35 @@ async def teamplay(message: Message, matches, teams, users, admin, db):
     if message.chat.type not in {"group", "supergroup"}:
         await message.answer("👥 Team matches work inside groups.")
         return
+
     await admin.register_chat(message.chat.id, message.chat.type, getattr(message.chat, "title", None))
     if matches.get(message.chat.id):
         await message.answer("🏏 A match is already active here.")
         return
 
-    args = (message.text or "").split()[1:]
-    if not args:
+    tokens = (message.text or "").split()[1:]
+    if not tokens:
         await message.answer(
-            "Usage: <code>/teamplay TEAM NAME [OVERS] [BALLS]</code>\n"
+            "Usage: <code>/teamplay TEAM_NAME [OVERS] [BALLS]</code>\n"
             "Example: <code>/teamplay Tigers 2 6</code>",
             parse_mode="HTML",
         )
         return
 
-    balls = 6
-    if args[-1].isdigit() and int(args[-1]) in {3, 4, 5, 6}:
-        balls = int(args.pop())
-    overs = 2
-    if args and args[-1].isdigit():
-        overs = int(args.pop())
-    team_name = " ".join(args).strip()
+    # Numeric suffixes are format options; everything before them is the team name.
+    fmt = []
+    while tokens and tokens[-1].isdigit() and len(fmt) < 2:
+        fmt.append(int(tokens.pop()))
+    fmt.reverse()
+    try:
+        overs, balls = parse_format([str(x) for x in fmt], 2, 6)
+    except ValueError as e:
+        await message.answer(f"❌ {e}", parse_mode="HTML")
+        return
 
-    if overs not in {1, 2, 5, 10, 20}:
-        await message.answer("Overs must be 1, 2, 5, 10 or 20.")
+    team_name = " ".join(tokens).strip()
+    if not team_name:
+        await message.answer("❌ Team name is required.")
         return
 
     team = await teams.get(message.chat.id, team_name)
@@ -355,13 +513,16 @@ async def teamplay(message: Message, matches, teams, users, admin, db):
     if len(roster) not in {4, 5}:
         await message.answer(
             "❌ Team match needs exactly 4 or 5 players.\n"
-            "Captain: add 4–5 players or set a 4/5-player match roster."
+            "Add players with /team add USER_ID."
         )
         return
 
     await users.ensure(message.from_user)
     team_a = [Player(x["uid"], x["name"]) for x in roster]
-    captain = Player(team["captain"], team["player_names"].get(str(team["captain"]), str(team["captain"])))
+    captain = Player(
+        team["captain"],
+        team["player_names"].get(str(team["captain"]), str(team["captain"]))
+    )
 
     match = Match(
         message.chat.id,
@@ -377,12 +538,16 @@ async def teamplay(message: Message, matches, teams, users, admin, db):
     await persist_live(db, matches, match)
 
     await message.answer(
-        "🏟️ <b>TEAM MATCH LOBBY</b>\n\n"
-        f"🟦 <b>{team['name']}</b> • {len(team_a)} players\n"
-        f"🎯 <b>{overs} overs × {balls} balls</b>\n\n"
-        "Opposing captain: <code>/teamjoin YOUR TEAM NAME</code>",
+        "━━━━━━━━━━━━━━━━━━\n"
+        "👥 <b>TEAM MATCH LOBBY</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"🟦 <b>{team['name']}</b>  •  {len(team_a)} players\n"
+        f"⚙️ Format: <b>{overs} overs × {balls} balls</b>\n\n"
+        "Opposing captain:\n"
+        "<code>/teamjoin YOUR_TEAM_NAME</code>",
         parse_mode="HTML",
     )
+
 
 @router.message(Command("teamjoin"))
 async def teamjoin(message: Message, matches, teams, users, admin, db, bot):
@@ -416,8 +581,7 @@ async def teamjoin(message: Message, matches, teams, users, admin, db, bot):
         await message.answer("❌ Your team must have exactly 4 or 5 match players.")
         return
 
-    team_b = [Player(x["uid"], x["name"]) for x in roster]
-    match.team_b = team_b
+    match.team_b = [Player(x["uid"], x["name"]) for x in roster]
     match.team_b_name = team["name"]
     match.team_b_captain = team["captain"]
     match.opponent = Player(
@@ -425,126 +589,64 @@ async def teamjoin(message: Message, matches, teams, users, admin, db, bot):
         team["player_names"].get(str(team["captain"]), str(team["captain"]))
     )
 
-    # Toss: choose batting side randomly.
-    batting_side = "a" if __import__("random").choice([True, False]) else "b"
-    engine = CricketEngine()
-    engine.start_team(match, batting_side)
+    import random
+    batting_side = "a" if random.choice([True, False]) else "b"
+    CricketEngine().start_team(match, batting_side)
     await persist_live(db, matches, match)
 
     i = match.innings
     await message.answer(
-        "🏏 <b>TEAM MATCH STARTED!</b>\n\n"
-        f"🟦 <b>{match.team_a_name}</b> — {len(match.team_a)} players\n"
-        f"🟥 <b>{match.team_b_name}</b> — {len(match.team_b)} players\n\n"
-        f"🪙 Toss complete → <b>{_active_side_name(match, batting_side)}</b> bats first.\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "🏏 <b>TEAM MATCH STARTED</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"🟦 <b>{match.team_a_name}</b>  •  {len(match.team_a)}\n"
+        f"🟥 <b>{match.team_b_name}</b>  •  {len(match.team_b)}\n\n"
+        f"🪙 Toss → <b>{_active_side_name(match, batting_side)}</b> bats first.\n\n"
         f"🏏 Striker: <b>{i.batter.name}</b>\n"
-        f"🏏 Non-striker: <b>{i.non_striker.name if i.non_striker else '—'}</b>\n"
+        f"👤 Non-striker: <b>{i.non_striker.name}</b>\n"
         f"🎯 Bowler: <b>{i.bowler.name}</b>\n\n"
-        "🎯 <b>Bowler goes FIRST.</b>\n"
-        "The current bowler has been sent the private delivery menu.",
+        "🎯 <b>Bowler goes first.</b>",
         parse_mode="HTML",
     )
     await _begin_next_ball(bot, db, matches, match)
 
 
-@router.message(Command("status"))
 @router.message(Command("score"))
+@router.message(Command("status"))
 async def status(message: Message, matches):
     match = matches.get(message.chat.id)
     if not match:
         await message.answer("🏏 No active match.")
         return
+
     if not match.innings:
-        await message.answer(f"🏏 Lobby — {match.creator.name} is waiting.")
+        await message.answer("🏏 Match lobby is waiting for the second side.")
         return
 
     i = match.innings
-    text = (
-        f"🏏 <b>LIVE SCORE</b>\n\n"
-        f"🏏 Batter: <b>{i.batter.name}</b>"
-        + (f"\n🏏 Non-striker: <b>{i.non_striker.name}</b>" if match.mode == "team" and i.non_striker else "")
-        + f"\n📊 <b>{score_text(match)}</b>\n"
-        f"🎯 Bowler: <b>{i.bowler.name}</b>\n"
-        f"⚾ Legal balls: {i.balls}/{match.max_overs * match.balls_per_over}"
-    )
-    if match.mode == "team":
-        text += (
-            f"\n\n🟦 {match.team_a_name}: {len(match.team_a)} players"
-            f"\n🟥 {match.team_b_name}: {len(match.team_b)} players"
-        )
+    lines = [
+        "━━━━━━━━━━━━━━━━━━",
+        "📊 <b>LIVE SCORE</b>",
+        "━━━━━━━━━━━━━━━━━━",
+        "",
+        f"🏏 <b>{i.runs}/{i.wickets}</b>  •  {i.over(match.balls_per_over)} overs",
+        f"⚙️ {match.max_overs} overs × {match.balls_per_over} balls",
+        f"🎯 Bowler: <b>{i.bowler.name}</b>",
+    ]
+    if match.mode == "classic":
+        lines.append(f"🏏 Batter: <b>{i.batter.name}</b>")
+    else:
+        lines.extend([
+            f"🏏 Striker: <b>{i.batter.name}</b>",
+            f"👤 Non-striker: <b>{i.non_striker.name if i.non_striker else '—'}</b>",
+        ])
     if match.target:
-        text += f"\n🎯 Target: <b>{match.target}</b>"
-    await message.answer(text, parse_mode="HTML")
+        lines.append(f"🎯 Target: <b>{match.target}</b>")
+    await message.answer("\n".join(lines), parse_mode="HTML")
 
 
-async def _send_batting_prompt(bot, match):
-    """Show the live cricket animation in the group, never in the bowler DM."""
-    i = match.innings
-    if not i:
-        return
-    caption = (
-        "━━━━━━━━━━━━━━━━━━\n"
-        "🏏 <b>YOUR BATTING TURN</b>\n\n"
-        f"👤 Batter: <b>{i.batter.name}</b>\n"
-        "🔢 Choose your shot: <b>1–6</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━"
-    )
-    try:
-        from aiogram.types import FSInputFile
-        gif = FSInputFile("assets/cricket_live.gif")
-        await bot.send_animation(match.chat_id, gif, caption=caption, parse_mode="HTML")
-    except Exception:
-        await bot.send_message(match.chat_id, caption, parse_mode="HTML")
-
-async def _resolve_result(bot, message, match, users, db, matches, settings, bat, bowl):
-    engine = CricketEngine()
-    before_batter = match.innings.batter
-    before_bowler = match.innings.bowler
-
-    result = engine.play(match, bat, bowl, settings.owner_id)
-    await persist_live(db, matches, match)
-
-    wicket_line = (
-        f"❌ <b>{before_batter.name} OUT</b>\n"
-        if result.wicket else ""
-    )
-
-    await bot.send_message(
-        match.chat_id,
-        "━━━━━━━━━━━━━━\n"
-        f"⚾ <b>BALL {match.innings.over(match.balls_per_over)}</b>\n\n"
-        f"🏏 Batter: <b>{before_batter.name}</b>\n"
-        f"🎯 Bowler: <b>{before_bowler.name}</b>\n"
-        f"🎯 Delivery: <b>{result.ball_type}</b>\n"
-        f"{result.text}\n"
-        f"{wicket_line}\n"
-        f"📊 Score: <b>{score_text(match)}</b>",
-        parse_mode="HTML",
-    )
-
-    if engine.innings_complete(match):
-        if match.innings_no == 1:
-            engine.switch(match)
-            await persist_live(db, matches, match)
-            await bot.send_message(
-                match.chat_id,
-                "━━━━━━━━━━━━━━\n"
-                "🏁 <b>INNINGS OVER</b>\n\n"
-                f"🎯 Target: <b>{match.target}</b>\n"
-                f"🏏 {match.innings.batter.name}* is now batting.\n"
-                "🎯 The new bowler will choose the delivery first.",
-                parse_mode="HTML",
-            )
-            await _begin_next_ball(bot, db, matches, match)
-            return
-
-        winner = engine.winner(match)
-        await _finish_match_to_chat(bot, match, users, db, matches, winner)
-        return
-
-    await _begin_next_ball(bot, db, matches, match)
-    # _begin_next_ball handles the private delivery choice. The batting
-    # animation is sent only after the bowler submits it.
+async def _resolve_and_continue(bot, match, users, db, matches, settings, bat, bowl):
+    await _resolve_result(bot, match, users, db, matches, settings, bat, bowl)
 
 
 async def _group_number_input(message, matches, users, db, settings, bot):
@@ -562,63 +664,34 @@ async def _group_number_input(message, matches, users, db, settings, bot):
     i = match.innings
     uid = message.from_user.id
 
-    # SOLO: AI chooses the delivery after the user chooses the shot.
-    if match.opponent and match.opponent.uid == -1:
+    # Solo first innings: use the AI delivery that was selected BEFORE
+    # the batting prompt was shown.
+    if match.mode == "classic" and match.opponent and match.opponent.uid == -1 and match.innings_no == 1:
         if match.phase != Phase.BAT or uid != i.batter.uid:
             return
-        bowl = match.pending_bowl_type
-        if bowl is None:
+        if match.pending_bowl_type is None:
             match.pending_bowl_type = CricketAI.choose()
-            bowl = match.pending_bowl_type
+        bat = int(text)
+        bowl = match.pending_bowl_type
         match.pending_bowl_type = None
-        result = CricketEngine().play(
-            match, int(text), bowl, settings.owner_id
-        )
+        match.phase = Phase.BOWL
+        match.touch()
         await persist_live(db, matches, match)
-        await message.answer(
-            f"{result.text}\n\n"
-            f"🤖 AI delivery: <b>{result.ball_type}</b>\n"
-            f"🏏 Your score: <b>{score_text(match)}</b>",
-            parse_mode="HTML",
-        )
-        if CricketEngine().innings_complete(match):
-            if match.innings_no == 1:
-                CricketEngine().switch(match)
-                await persist_live(db, matches, match)
-                await message.answer(
-                    "🏁 <b>INNINGS OVER</b>\n"
-                    f"🎯 Target: <b>{match.target}</b>\n"
-                    "🎯 Your bowling turn is now private.",
-                    parse_mode="HTML",
-                )
-                return
-            await _finish_match_to_chat(
-                bot, match, users, db, matches, CricketEngine().winner(match)
-            )
-        else:
-            match.phase = Phase.BAT
-            match.touch()
-            await persist_live(db, matches, match)
-            await message.answer(
-                f"⚾ Next ball — send <b>1–6</b> when prompted."
-            )
+        await _resolve_and_continue(bot, match, users, db, matches, settings, bat, bowl)
         return
 
-    # Multiplayer/team batting input is accepted ONLY from the current striker.
     if match.phase != Phase.BAT:
-        await message.answer("⏳ Bowler is choosing the delivery first.")
+        await message.answer("⏳ <b>Bowler first.</b> Wait for the private delivery.", parse_mode="HTML")
         return
 
     if uid != i.batter.uid:
-        await message.answer("⏳ You are not the current striker.")
+        await message.answer("⏳ This is not your batting turn.", parse_mode="HTML")
         return
 
     if match.pending_bowl_type is None:
-        await message.answer("⏳ Wait for the bowler to choose a delivery.")
+        await message.answer("⏳ The bowler has not chosen a delivery yet.", parse_mode="HTML")
         return
 
-    # Consume the batting choice immediately so duplicate messages cannot
-    # submit a second ball.
     bat = int(text)
     bowl = match.pending_bowl_type
     match.pending_bowl_type = None
@@ -626,9 +699,7 @@ async def _group_number_input(message, matches, users, db, settings, bot):
     match.touch()
     await persist_live(db, matches, match)
 
-    await _resolve_result(
-        bot, message, match, users, db, matches, settings, bat, bowl
-    )
+    await _resolve_and_continue(bot, match, users, db, matches, settings, bat, bowl)
 
 
 async def _dm_bowling_input(message, matches, users, db, settings, bot):
@@ -649,19 +720,6 @@ async def _dm_bowling_input(message, matches, users, db, settings, bot):
         ),
         None,
     )
-
-    # Solo second innings: the human is the bowler; AI is the batter.
-    if not match:
-        match = next(
-            (
-                m for m in matches.all()
-                if m.opponent and m.opponent.uid == -1
-                and m.innings and m.phase == Phase.BOWL
-                and m.innings.bowler.uid == uid
-            ),
-            None,
-        )
-
     if not match:
         await message.answer("🏏 No active bowling turn for you.")
         return
@@ -674,34 +732,39 @@ async def _dm_bowling_input(message, matches, users, db, settings, bot):
 
     bowl = int(text)
 
-    # In solo second innings the AI supplies the batting number.
-    if match.opponent and match.opponent.uid == -1:
-        bat = CricketAI.choose()
-    else:
-        if match.phase != Phase.BOWL:
-            await message.answer("⏳ This ball has already been submitted.")
-            return
-        # Store the private delivery and ask the striker for the shot.
-        match.pending_bowl_type = bowl
-        match.phase = Phase.BAT
+    # Solo second innings: human bowls, AI bats.
+    if match.mode == "classic" and match.opponent and match.opponent.uid == -1 and match.innings_no == 2:
+        match.phase = Phase.BOWL
         match.touch()
         await persist_live(db, matches, match)
-        await _send_batting_prompt(bot, match)
-        await message.answer(
-            f"🔒 <b>Delivery locked:</b> {BOWLING_TYPES[bowl][1]} {BOWLING_TYPES[bowl][0]}\n"
-            "Waiting for the striker.",
-            parse_mode="HTML",
+        await _resolve_and_continue(
+            bot, match, users, db, matches, settings, CricketAI.choose(), bowl
         )
         return
 
-    # Solo second innings.
-    await _resolve_result(
-        bot, message, match, users, db, matches, settings, bat, bowl
+    if match.pending_bowl_type is not None or match.phase != Phase.BOWL:
+        await message.answer("⏳ This delivery has already been submitted.")
+        return
+
+    match.pending_bowl_type = bowl
+    match.phase = Phase.BAT
+    match.touch()
+    await persist_live(db, matches, match)
+
+    await send_batting_prompt(bot, match)
+    await message.answer(
+        f"🔒 <b>Delivery locked:</b> {BOWLING_TYPES[bowl][1]} {BOWLING_TYPES[bowl][0]}\n"
+        "The striker has been asked for the shot.",
+        parse_mode="HTML",
     )
 
 
 @router.message()
 async def number_input(message: Message, matches, users, db, settings, bot):
+    # This catch-all deliberately ignores commands and non-numeric messages.
+    # It cannot swallow /team, /leaderboard, /solo, etc.
+    if not (message.text or "").strip().isdigit():
+        return
     if message.chat.type == "private":
         async with _match_lock(message.from_user.id):
             await _dm_bowling_input(message, matches, users, db, settings, bot)
