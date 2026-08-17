@@ -1,7 +1,7 @@
 import asyncio
 import time
 
-from aiogram import Router
+from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message
 
@@ -260,14 +260,18 @@ async def solo(message: Message, matches, users, admin, db):
     match.innings.non_striker = None
     match.innings.batting_team = [user]
     match.innings.bowling_team = [ai]
+    # AI selects the delivery first; the player then supplies the shot.
+    match.pending_bowl_type = CricketAI.choose()
     match.phase = Phase.BAT
+    match.touch()
     await persist_live(db, matches, match)
 
     await message.answer(
         "🤖 <b>SOLO MODE</b>\n\n"
         "You 🆚 Cricket Bot AI\n"
         "🎯 2 overs • 3 legal balls/over\n\n"
-        "⚾ BALL 1\nSend your batting number <b>1–6 in the group</b>.",
+        "🎯 AI has selected its delivery.\n"
+        "🏏 Send your batting number <b>1–6 in the group</b>.",
         parse_mode="HTML",
     )
 
@@ -542,12 +546,14 @@ async def _group_number_input(message, matches, users, db, settings, bot):
     i = match.innings
     uid = message.from_user.id
 
-    # SOLO: AI chooses the delivery after the user chooses the shot.
+    # SOLO: AI delivery is chosen before the user's shot.
     if match.opponent and match.opponent.uid == -1:
-        if match.phase != Phase.BAT or uid != i.batter.uid:
+        if match.phase != Phase.BAT or uid != i.batter.uid or match.pending_bowl_type is None:
             return
+        bowl = match.pending_bowl_type
+        match.pending_bowl_type = None
         result = CricketEngine().play(
-            match, int(text), CricketAI.choose(), settings.owner_id
+            match, int(text), bowl, settings.owner_id
         )
         await persist_live(db, matches, match)
         await message.answer(
@@ -566,16 +572,19 @@ async def _group_number_input(message, matches, users, db, settings, bot):
                     "🎯 Your bowling turn is now private.",
                     parse_mode="HTML",
                 )
+                await _begin_next_ball(bot, db, matches, match)
                 return
             await _finish_match_to_chat(
                 bot, match, users, db, matches, CricketEngine().winner(match)
             )
         else:
+            match.pending_bowl_type = CricketAI.choose()
             match.phase = Phase.BAT
             match.touch()
             await persist_live(db, matches, match)
             await message.answer(
-                f"⚾ Next ball — send <b>1–6</b> when prompted."
+                "🎯 AI has chosen its delivery.\n"
+                "🏏 Next ball — send <b>1–6</b>."
             )
         return
 
@@ -680,7 +689,7 @@ async def _dm_bowling_input(message, matches, users, db, settings, bot):
     )
 
 
-@router.message()
+@router.message(F.text.regexp(r"^[1-6]$"))
 async def number_input(message: Message, matches, users, db, settings, bot):
     if message.chat.type == "private":
         async with _match_lock(message.from_user.id):

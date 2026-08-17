@@ -41,6 +41,13 @@ async def send_home(message: Message, settings):
         caption=caption,
         reply_markup=home_keyboard(),
     )
+    # The animated arena media is sent separately because Telegram does not
+    # reliably render an animation when it is attached as a photo.
+    try:
+        await message.answer_animation(FSInputFile("assets/cricket_live.gif"))
+    except Exception:
+        # A missing/unsupported media asset must never break /start.
+        pass
 
 @router.message(Command("start"))
 async def start(message: Message, settings, admin):
@@ -90,24 +97,68 @@ async def home_tournaments(call: CallbackQuery):
     )
 
 @router.callback_query(F.data == "home:profile")
-async def home_profile(call: CallbackQuery):
+async def home_profile(call: CallbackQuery, users):
     await call.answer()
-    await call.message.answer("/profile")
+    doc = await users.get(call.from_user.id)
+    if not doc:
+        await users.ensure(call.from_user)
+        doc = await users.get(call.from_user.id)
+    await call.message.answer(
+        f"🏏 <b>{call.from_user.full_name}</b>\n\n"
+        f"⭐ Level: <b>{1 + doc.get('xp', 0) // 500}</b>\n"
+        f"🏆 Rating: <b>{doc.get('rating', 1000)}</b>\n"
+        f"✨ XP: <b>{doc.get('xp', 0)}</b>\n"
+        f"🪙 Coins: <b>{doc.get('coins', 0)}</b>\n\n"
+        f"Matches: {doc.get('matches', 0)}\n"
+        f"Wins: {doc.get('wins', 0)}\n"
+        f"Losses: {doc.get('losses', 0)}\n"
+        f"Runs: {doc.get('runs', 0)}\n"
+        f"Wickets: {doc.get('wickets', 0)}",
+        parse_mode="HTML",
+    )
 
 @router.callback_query(F.data == "home:stats")
-async def home_stats(call: CallbackQuery):
+async def home_stats(call: CallbackQuery, users):
     await call.answer()
-    await call.message.answer("/stats")
+    doc = await users.get(call.from_user.id)
+    if not doc:
+        await users.ensure(call.from_user)
+        doc = await users.get(call.from_user.id)
+    await call.message.answer(
+        "📊 <b>YOUR STATS</b>\n\n"
+        f"🏏 Matches: <b>{doc.get('matches', 0)}</b>\n"
+        f"🏆 Wins: <b>{doc.get('wins', 0)}</b>\n"
+        f"❌ Losses: <b>{doc.get('losses', 0)}</b>\n"
+        f"🤝 Ties: <b>{doc.get('ties', 0)}</b>\n"
+        f"🏏 Runs: <b>{doc.get('runs', 0)}</b>\n"
+        f"🎯 Wickets: <b>{doc.get('wickets', 0)}</b>\n"
+        f"🔥 Fours: <b>{doc.get('fours', 0)}</b>\n"
+        f"💥 Sixes: <b>{doc.get('sixes', 0)}</b>",
+        parse_mode="HTML",
+    )
 
 @router.callback_query(F.data == "home:leaderboard")
-async def home_leaderboard(call: CallbackQuery):
+async def home_leaderboard(call: CallbackQuery, users):
     await call.answer()
-    await call.message.answer("/leaderboard")
+    rows = await users.leaderboard("rating")
+    lines = ["🏅 <b>LEADERBOARD — RATING</b>", ""]
+    if not rows:
+        lines.append("No players yet.")
+    else:
+        for idx, row in enumerate(rows, 1):
+            lines.append(f"{idx}. {row.get('name', 'Player')} — <b>{row.get('rating', 0)}</b>")
+    await call.message.answer("\n".join(lines), parse_mode="HTML")
 
 @router.callback_query(F.data == "home:daily")
-async def home_daily(call: CallbackQuery):
+async def home_daily(call: CallbackQuery, users):
     await call.answer()
-    await call.message.answer("/daily")
+    await users.ensure(call.from_user)
+    ok, reward = await users.daily(call.from_user.id)
+    await call.message.answer(
+        f"🎁 Daily reward claimed: <b>{reward} coins</b>!" if ok
+        else "⏳ You already claimed today's reward.",
+        parse_mode="HTML",
+    )
 
 @router.callback_query(F.data == "home:teams")
 async def home_teams(call: CallbackQuery):
@@ -134,6 +185,7 @@ async def help_cmd(message: Message):
     )
 
 @router.message(Command("cancel"))
-async def cancel(message: Message, matches):
+async def cancel(message: Message, matches, db):
     match = matches.remove(message.chat.id)
+    await db.live_matches.delete_one({"chat_id": message.chat.id})
     await message.answer("🛑 Match cancelled." if match else "❌ No active match.")
