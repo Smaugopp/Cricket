@@ -13,7 +13,7 @@ async def commands(message: Message):
         "🏏 Bat in group • 🎯 Bowl privately in DM\n\n"
         "👥 <b>TEAMS</b>\n"
         "/teams /team create /team my /team roster /team add /team remove\n"
-        "/team captain /team vice /team xi /team role /team leave /team disband\n\n"
+        "/team captain /team vice /team xi /team matchxi /team role /team leave /team disband\n\n"
         "🏆 <b>COMPETITIONS</b>\n"
         "/tournament /league\n\n"
         "👤 <b>CAREER</b>\n"

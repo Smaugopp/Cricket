@@ -164,6 +164,37 @@ async def team_cmd(message: Message, teams, users):
         ok, text = await teams.set_xi(team, [int(x) for x in ids])
         await message.answer(("✅ " if ok else "❌ ") + text); return
 
+
+    if action == "matchxi":
+        team = await teams.my_team(message.chat.id, message.from_user.id)
+        if not team:
+            await message.answer("❌ You are not in a team.")
+            return
+
+        sub_parts = parts[2].split() if len(parts) > 2 else []
+        if sub_parts and sub_parts[0].lower() == "clear":
+            if team["captain"] != message.from_user.id:
+                await message.answer("❌ Captain only.")
+                return
+            await teams.clear_match_xi(team)
+            await message.answer("✅ Match XI cleared.")
+            return
+
+        if team["captain"] != message.from_user.id:
+            await message.answer("❌ Captain only.")
+            return
+
+        ids = sub_parts
+        if len(ids) not in {4, 5} or not all(x.isdigit() for x in ids):
+            await message.answer(
+                "Usage: /team matchxi ID1 ID2 ID3 ID4 [ID5]"
+            )
+            return
+
+        ok, text = await teams.set_match_xi(team, [int(x) for x in ids])
+        await message.answer(("✅ " if ok else "❌ ") + text)
+        return
+
     if action == "role":
         team = await teams.my_team(message.chat.id, message.from_user.id)
         if not team or team["captain"] != message.from_user.id:
